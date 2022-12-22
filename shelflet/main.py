@@ -79,7 +79,12 @@ def read_pkl_zstd(dctx, obj):
     -------
     Python object
     """
-    obj1 = loads(dctx.decompress(obj))
+    obj1 = dctx.decompress(obj)
+
+    try:
+        obj1 = loads(obj1)
+    except:
+        pass
 
     return obj1
 
@@ -99,7 +104,10 @@ def write_pkl_zstd(cctx, obj, compress_level=1, pkl_protocol=5):
     -------
     If file_path is None, then it returns the byte object, else None.
     """
-    c_obj = cctx.compress(dumps(obj, protocol=pkl_protocol))
+    if isinstance(obj, bytes):
+        c_obj = cctx.compress(obj)
+    else:
+        c_obj = cctx.compress(dumps(obj, protocol=pkl_protocol))
 
     return c_obj
 
@@ -158,7 +166,6 @@ class Shelf(collections.abc.MutableMapping):
         try:
             value = self.cache[key]
         except KeyError:
-            # f = BytesIO(self.dict[key.encode(self.keyencoding)])
             value = read_pkl_zstd(self._decompressor, self.dict[key.encode(self.keyencoding)])
             if self.writeback:
                 self.cache[key] = value
@@ -167,6 +174,7 @@ class Shelf(collections.abc.MutableMapping):
     def __setitem__(self, key, value):
         if self.writeback:
             self.cache[key] = value
+
         p = write_pkl_zstd(self._compressor, value, pkl_protocol=self._protocol, compress_level=self._compress_level)
         self.dict[key.encode(self.keyencoding)] = p
 
@@ -267,7 +275,7 @@ class DbfilenameShelf(Shelf):
         Shelf.__init__(self, dbm.open(str(filename), flag), protocol, writeback, compress_level=compress_level)
 
 
-def open(filename, flag='c', protocol=5, writeback=False, compressor='zstd', compress_level=1):
+def open(filename, flag='r', protocol=5, writeback=False, compressor='zstd', compress_level=1):
     """
     Open a persistent dictionary for reading and writing. The values in the dictionary must be pickleable and will be compressed using the given compressor.
 

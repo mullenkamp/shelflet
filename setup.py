@@ -9,7 +9,7 @@ here = os.path.abspath(os.path.dirname(__file__))
 # General parameters
 name = 'shelflet'
 main_package = 'shelflet'
-version = '0.1.0'
+version = '0.1.1'
 descrip = 'The Python shelve module except with compression to make smaller shelves!'
 
 # The below code is for readthedocs. To have sphinx/readthedocs interact with
