@@ -162,6 +162,24 @@ class Shelf(collections.abc.MutableMapping):
             return self[key]
         return default
 
+    # def update(self, key_value_dict):
+    #     """
+    #     Update method only for compatability with dicts. It's no faster than iteratively assigning keys to values.
+    #     """
+    #     for key, value in key_value_dict.items():
+    #         self[key] = value
+
+    def reorganize(self):
+        """
+        Only applies to gdbm.
+        If you have carried out a lot of deletions and would like to shrink the space used by the gdbm file, this routine will reorganize the database. gdbm objects will not shorten the length of a database file except by using this reorganization; otherwise, deleted file space will be kept and reused as new (key, value) pairs are added.
+        """
+        if 'reorganize' in self.dict:
+            self.dict.reorganize()
+        else:
+            raise ValueError('reorganize is unavailable.')
+        return
+
     def __getitem__(self, key):
         try:
             value = self.cache[key]
