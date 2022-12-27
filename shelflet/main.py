@@ -300,7 +300,7 @@ def open(filename, flag='r', protocol=5, writeback=False, compressor='zstd', com
     Parameters
     -----------
     filename : str or pathlib.Path
-        It must be a path to a local file location. Likely, multiple files will be created that represent the saved binary data (dat) and the index (dir).
+        It must be a path to a local file location. Multiple files may be created is the dbm.dumb module is used that represent the saved binary data (dat) and the index (dir). Otherwise only one file will be created that contains both the data and the index.
     flag : str
         Flag associated with how the file is opened according to the dbm. See below for details.
     protocol : int
