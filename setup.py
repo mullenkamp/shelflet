@@ -9,8 +9,8 @@ here = os.path.abspath(os.path.dirname(__file__))
 # General parameters
 name = 'shelflet'
 main_package = 'shelflet'
-version = '0.1.2'
-descrip = 'The Python shelve module except with compression to make smaller shelves!'
+version = '0.1.3'
+descrip = 'The Python shelve module except with optional serializers and compression to make smaller shelves!'
 
 # The below code is for readthedocs. To have sphinx/readthedocs interact with
 # the contained package, readthedocs needs to build the package. But the dependencies
@@ -18,7 +18,7 @@ descrip = 'The Python shelve module except with compression to make smaller shel
 if os.environ.get('READTHEDOCS', False) == 'True':
     INSTALL_REQUIRES = []
 else:
-    INSTALL_REQUIRES = ['zstandard']
+    INSTALL_REQUIRES = []
 
 # Get the long description from the README file
 with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:

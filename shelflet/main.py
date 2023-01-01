@@ -57,62 +57,106 @@ entries that you access.  You can call d.sync() to write back all the
 entries in the cache, and empty the cache (d.sync() also synchronizes
 the persistent dictionary on disk, if feasible).
 """
-from pickle import DEFAULT_PROTOCOL, HIGHEST_PROTOCOL, loads, dumps
-import zstandard as zstd
+import pickle
 import dbm
+import pickle
+import json
+import pathlib
+import inspect
+import gzip
+from collections.abc import Mapping, MutableMapping
+from typing import Any, Generic, Iterator, Union
 
-import collections.abc
+imports = {}
+try:
+    import orjson
+    imports['orjson'] = True
+except:
+    imports['orjson'] = False
 
-__all__ = ["Shelf", "BsdDbShelf", "DbfilenameShelf", "open"]
+try:
+    import zstandard as zstd
+    imports['zstd'] = True
+except:
+    imports['zstd'] = False
 
-
-def read_pkl_zstd(dctx, obj):
-    """
-    Deserializer from a pickled object compressed with zstandard.
-
-    Parameters
-    ----------
-    obj : bytes or str
-        Either a bytes object that has been pickled and compressed or a str path to the file object.
-
-    Returns
-    -------
-    Python object
-    """
-    obj1 = dctx.decompress(obj)
-
-    try:
-        obj1 = loads(obj1)
-    except:
-        pass
-
-    return obj1
-
-
-def write_pkl_zstd(cctx, obj, compress_level=1, pkl_protocol=5):
-    """
-    Serializer using pickle and zstandard. Converts any object that can be pickled to a binary object then compresses it using zstandard. Optionally saves the object to disk. If obj is bytes, then it will only be compressed without pickling.
-
-    Parameters
-    ----------
-    obj : any
-        Any pickleable object.
-    compress_level : int
-        zstandard compression level.
-
-    Returns
-    -------
-    If file_path is None, then it returns the byte object, else None.
-    """
-    if isinstance(obj, bytes):
-        c_obj = cctx.compress(obj)
-    else:
-        c_obj = cctx.compress(dumps(obj, protocol=pkl_protocol))
-
-    return c_obj
+try:
+    import lz4
+    imports['lz4'] = True
+except:
+    imports['lz4'] = False
 
 
-class _ClosedDict(collections.abc.MutableMapping):
+__all__ = ["Shelf", "open"]
+
+hidden_keys = (b'00~._serializer', b'01~._compressor')
+
+#######################################################
+### Serializers and compressors
+
+## Serializers
+class Pickle:
+    def __init__(self, protocol):
+        self.protocol = protocol
+    def dumps(self, obj):
+        return pickle.dumps(obj, self.protocol)
+    def loads(self, obj):
+        return pickle.loads(obj)
+
+
+class Json:
+    def dumps(obj: Any) -> bytes:
+        return json.dumps(obj).encode()
+    def loads(obj):
+        return json.loads(obj.decode())
+
+
+class Orjson:
+    def dumps(obj: Any) -> bytes:
+        return orjson.dumps(obj, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_OMIT_MICROSECONDS | orjson.OPT_SERIALIZE_NUMPY)
+    def loads(obj):
+        return orjson.loads(obj)
+
+
+# class Numpy:
+#     def dumps(obj: np.ndarray) -> bytes:
+#         return json.dumps(obj).tobytes()
+#     def loads(obj):
+#         return np.frombuffer(obj)
+
+
+## Compressors
+class Gzip:
+    def __init__(self, compress_level):
+        self.compress_level = compress_level
+    def compress(self, obj):
+        return gzip.compress(obj, self.compress_level)
+    def decompress(self, obj):
+        return gzip.decompress(obj)
+
+
+class Zstd:
+    def __init__(self, compress_level):
+        self.compress_level = compress_level
+    def compress(self, obj):
+        return zstd.compress(obj, self.compress_level)
+    def decompress(self, obj):
+        return zstd.decompress(obj)
+
+
+class Lz4:
+    def __init__(self, compress_level):
+        self.compress_level = compress_level
+    def compress(self, obj):
+        return lz4.frame.compress(obj, self.compress_level)
+    def decompress(self, obj):
+        return lz4.frame.decompress(obj)
+
+
+#######################################################
+### Classes
+
+class _ClosedDict(MutableMapping):
     'Marker for a closed dict.  Access attempts raise a ValueError.'
 
     def closed(self, *args):
@@ -123,198 +167,264 @@ class _ClosedDict(collections.abc.MutableMapping):
         return '<Closed Dictionary>'
 
 
-class Shelf(collections.abc.MutableMapping):
+class Shelf(MutableMapping):
     """Base class for shelf implementations.
 
     This is initialized with a dictionary-like object.
     See the module's __doc__ string for an overview of the interface.
     """
 
-    def __init__(self, dict, protocol=None, writeback=False,
-                 keyencoding="utf-8", compressor='zstd', compress_level=1):
-        self.dict = dict
-        if protocol is None:
-            protocol = 5
-        self._protocol = protocol
-        self.writeback = writeback
-        self.cache = {}
-        self.keyencoding = keyencoding
-        self._compress_level = compress_level
+    def __init__(self, file_path: str, flag: str = "r", serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
+        """
 
-        if compressor.lower() == 'zstd':
-            self._compressor = zstd.ZstdCompressor(level=compress_level)
-            self._decompressor = zstd.ZstdDecompressor()
+        """
+        if flag == "r":  # Open existing database for reading only (default)
+            write = False
+            fp_exists = True
+        elif flag == "w":  # Open existing database for reading and writing
+            write = True
+            fp_exists = True
+        elif flag == "c":  # Open database for reading and writing, creating it if it doesn't exist
+            fp = pathlib.Path(file_path)
+            fp_exists = fp.exists()
+            write = True
+        elif flag == "n":  # Always create a new, empty database, open for reading and writing
+            write = True
+            fp_exists = False
         else:
-            raise NotImplementedError('Only zstd is implemented.')
+            raise ValueError("Invalid flag")
+
+        env = dbm.open(str(file_path), flag+'f')
+
+        self.env = env
+        self._write = write
+
+        ## Load or assign encodings
+        if fp_exists:
+            self._serializer = pickle.loads(env[b'00~._serializer'])
+            self._compressor = pickle.loads(env[b'01~._compressor'])
+        else:
+            ## Serializer
+            if serializer is None:
+                self._serializer = None
+            elif serializer == 'pickle':
+                self._serializer = Pickle(protocol)
+            elif serializer == 'json':
+                self._serializer = Json
+            elif serializer == 'orjson':
+                if imports['orjson']:
+                    self._serializer = Orjson
+                else:
+                    raise ValueError('orjson could not be imported.')
+            elif inspect.isclass(serializer):
+                class_methods = dir(serializer)
+                if ('dumps' in class_methods) and ('loads' in class_methods):
+                    self._serializer = serializer
+                else:
+                    raise ValueError('If a class is passed for a serializer, then it must have dumps and loads methods.')
+            else:
+                raise ValueError('serializer must be one of pickle, json, orjson, or a serializer class with dumps and loads methods.')
+
+            ## Compressor
+            if compressor is None:
+                self._compressor = None
+            elif compressor == 'gzip':
+                self._compressor = Gzip(compress_level)
+            elif compressor == 'zstd':
+                if imports['zstd']:
+                    self._compressor = Zstd(compress_level)
+                else:
+                    raise ValueError('zstd could not be imported.')
+            elif compressor == 'lz4':
+                if imports['lz4']:
+                    self._compressor = Lz4(compress_level)
+                else:
+                    raise ValueError('lz4 could not be imported.')
+            elif inspect.isclass(compressor):
+                class_methods = dir(compressor)
+                if ('compress' in class_methods) and ('decompress' in class_methods):
+                    self._compressor = compressor(compress_level)
+                else:
+                    raise ValueError('If a class is passed for a compressor, then it must have compress and decompress methods as well as a compress_level parameter in the __init__.')
+            else:
+                raise ValueError('compressor must be one of gzip, zstd, lz4, or a compressor class with compress and decompress methods.')
+
+            ## Save encodings if new file
+            env[b'00~._serializer'] = pickle.dumps(self._serializer, protocol)
+            env[b'01~._compressor'] = pickle.dumps(self._compressor, protocol)
+
+            if hasattr(env, 'sync'):
+                env.sync()
+
+    def _pre_key(self, key: str) -> bytes:
+
+        return key.encode()
+
+    def _post_key(self, key: bytes) -> str:
+
+        return key.decode()
+
+    def _pre_value(self, value) -> bytes:
+
+        ## Serialize to bytes
+        if self._serializer is not None:
+            value = self._serializer.dumps(value)
+
+        ## Compress bytes
+        if self._compressor is not None:
+            value = self._compressor.compress(value)
+
+        return value
+
+    def _post_value(self, value: bytes):
+
+        ## Decompress bytes
+        if self._compressor is not None:
+            value = self._compressor.decompress(value)
+
+        ## Serialize from bytes
+        if self._serializer is not None:
+            value = self._serializer.loads(value)
+
+        return value
+
+    def keys(self):
+        for key in self.env.keys():
+            if key not in hidden_keys:
+                yield self._post_key(key)
+
+    def items(self):
+        for key in self.env.keys():
+            if key not in hidden_keys:
+                yield self._post_key(key), self._post_value(self.env[key])
+
+    def values(self):
+        for key in self.env.keys():
+            if key not in hidden_keys:
+                yield self._post_value(self.env[key])
 
     def __iter__(self):
-        for k in self.dict.keys():
-            yield k.decode(self.keyencoding)
+        return self.keys()
 
     def __len__(self):
-        return len(self.dict)
+        return len(self.env) - len(hidden_keys)
 
     def __contains__(self, key):
-        return key.encode(self.keyencoding) in self.dict
+        return self._pre_key(key) in self.env
 
     def get(self, key, default=None):
-        if key.encode(self.keyencoding) in self.dict:
-            return self[key]
+        if self._pre_key(key) in self.env:
+            return self._post_value(self.env[self._pre_key(key)])
         return default
 
-    # def update(self, key_value_dict):
-    #     """
-    #     Update method only for compatability with dicts. It's no faster than iteratively assigning keys to values.
-    #     """
-    #     for key, value in key_value_dict.items():
-    #         self[key] = value
+    def update(self, key_value_dict):
+        """
+        Update method only for compatability with dicts. It's no faster than iteratively assigning keys to values.
+        """
+        if self._write:
+            for key, value in key_value_dict.items():
+                self[key] = value
+
+            self.sync()
+        else:
+            raise ValueError('File is open for read only.')
 
     def reorganize(self):
         """
         Only applies to gdbm.
         If you have carried out a lot of deletions and would like to shrink the space used by the gdbm file, this routine will reorganize the database. gdbm objects will not shorten the length of a database file except by using this reorganization; otherwise, deleted file space will be kept and reused as new (key, value) pairs are added.
         """
-        if 'reorganize' in self.dict:
-            self.dict.reorganize()
+        if hasattr(self.env, 'reorganize'):
+            self.env.reorganize()
         else:
             raise ValueError('reorganize is unavailable.')
         return
 
     def __getitem__(self, key):
-        try:
-            value = self.cache[key]
-        except KeyError:
-            value = read_pkl_zstd(self._decompressor, self.dict[key.encode(self.keyencoding)])
-            if self.writeback:
-                self.cache[key] = value
-        return value
+        value = self.env[self._pre_key(key)]
+
+        return self._post_value(value)
 
     def __setitem__(self, key, value):
-        if self.writeback:
-            self.cache[key] = value
-
-        p = write_pkl_zstd(self._compressor, value, pkl_protocol=self._protocol, compress_level=self._compress_level)
-        self.dict[key.encode(self.keyencoding)] = p
+        if self._write:
+            self.env[self._pre_key(key)] = self._pre_value(value)
+        else:
+            raise ValueError('File is open for read only.')
 
     def __delitem__(self, key):
-        del self.dict[key.encode(self.keyencoding)]
-        try:
-            del self.cache[key]
-        except KeyError:
-            pass
+        del self.env[self._pre_key(key)]
 
     def __enter__(self):
         return self
 
-    def __exit__(self, type, value, traceback):
+    def __exit__(self, *args):
         self.close()
 
+    def clear(self):
+        if self._write:
+            for key in self.keys():
+                del self.env[key]
+            self.sync()
+        else:
+            raise ValueError('File is open for read only.')
+
     def close(self):
-        if self.dict is None:
+        if self.env is None:
             return
         try:
             self.sync()
             try:
-                self.dict.close()
+                self.env.close()
             except AttributeError:
                 pass
         finally:
             # Catch errors that may happen when close is called from __del__
             # because CPython is in interpreter shutdown.
             try:
-                self.dict = _ClosedDict()
+                self.env = _ClosedDict()
             except:
-                self.dict = None
+                self.env = None
 
     def __del__(self):
-        if not hasattr(self, 'writeback'):
-            # __init__ didn't succeed, so don't bother closing
-            # see http://bugs.python.org/issue1339007 for details
-            return
         self.close()
 
     def sync(self):
-        if self.writeback and self.cache:
-            self.writeback = False
-            for key, entry in self.cache.items():
-                self[key] = entry
-            self.writeback = True
-            self.cache = {}
-        if hasattr(self.dict, 'sync'):
-            self.dict.sync()
+        if hasattr(self.env, 'sync'):
+            self.env.sync()
 
 
-class BsdDbShelf(Shelf):
-    """Shelf implementation using the "BSD" db interface.
-
-    This adds methods first(), next(), previous(), last() and
-    set_location() that have no counterpart in [g]dbm databases.
-
-    The actual database must be opened using one of the "bsddb"
-    modules "open" routines (i.e. bsddb.hashopen, bsddb.btopen or
-    bsddb.rnopen) and passed to the constructor.
-
-    See the module's __doc__ string for an overview of the interface.
+def open(
+    file_path: str, flag: str = "r", serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
     """
-
-    def __init__(self, dict, protocol=None, writeback=False,
-                 keyencoding="utf-8"):
-        Shelf.__init__(self, dict, protocol, writeback, keyencoding)
-
-    def set_location(self, key):
-        key, value = self.dict.set_location(key)
-        return key.decode(self.keyencoding), read_pkl_zstd(self._decompressor, value)
-
-    def next(self):
-        key, value = next(self.dict)
-        return key.decode(self.keyencoding), read_pkl_zstd(self._decompressor, value)
-
-    def previous(self):
-        key, value = self.dict.previous()
-        return key.decode(self.keyencoding), read_pkl_zstd(self._decompressor, value)
-
-    def first(self):
-        key, value = self.dict.first()
-        return key.decode(self.keyencoding), read_pkl_zstd(self._decompressor, value)
-
-    def last(self):
-        key, value = self.dict.last()
-        return key.decode(self.keyencoding), read_pkl_zstd(self._decompressor, value)
-
-
-class DbfilenameShelf(Shelf):
-    """Shelf implementation using the "dbm" generic dbm interface.
-
-    This is initialized with the filename for the dbm database.
-    See the module's __doc__ string for an overview of the interface.
-    """
-
-    def __init__(self, filename, flag='c', protocol=None, writeback=False, compress_level=1):
-        Shelf.__init__(self, dbm.open(str(filename), flag), protocol, writeback, compress_level=compress_level)
-
-
-def open(filename, flag='r', protocol=5, writeback=False, compressor='zstd', compress_level=1):
-    """
-    Open a persistent dictionary for reading and writing. The values in the dictionary must be pickleable and will be compressed using the given compressor.
+    Open a persistent dictionary for reading and writing. On creation of the file, the encodings (serializer and compressor) will be written to the file. Any reads and new writes do not need to be opened with the encoding parameters. Currently, ShockDB uses pickle to serialize the encodings to the file.
 
     Parameters
     -----------
-    filename : str or pathlib.Path
-        It must be a path to a local file location. Multiple files may be created is the dbm.dumb module is used that represent the saved binary data (dat) and the index (dir). Otherwise only one file will be created that contains both the data and the index.
+    file_path : str or pathlib.Path
+        It must be a path to a local file location.
+
     flag : str
-        Flag associated with how the file is opened according to the dbm. See below for details.
+        Flag associated with how the file is opened according to the dbm style. See below for details.
+
+    serializer : str, class, or None
+        The serializer to use to convert the input object to bytes. Currently, must be one of pickle, json, orjson, or None. If the objects can be serialized to json, then use orjson. It's super fast and you won't have the pickle issues.
+        If None, then the input values must be bytes.
+        A class with dumps and loads methods can also be passed as a custom serializer.
+
     protocol : int
         The pickle protocol to use.
-    writeback : bool
-        If the writeback parameter is set to True, all entries accessed are also cached in memory, and written back on sync() and close().
-    compressor : str
+
+    compressor : str, class, or None
         The compressor to use to compress the pickle object before being written. Currently, only zstd is accepted.
+        The amount of compression will vary wildly depending on the input object and the serializer used. It's definitely worth doing some testing before using a compressor. Saying that...if you serialize to json, you'll likely get a lot of benefit from a fast compressor.
+        A class with compress and decompress methods can also be passed as a custom serializer. The class also needs a compress_level parameter in the __init__.
+
     compress_level : int
         The compression level for the compressor.
 
     Returns
     -------
-    DbfilenameShelf
+    Shock
 
     The optional *flag* argument can be:
 
@@ -336,4 +446,4 @@ def open(filename, flag='r', protocol=5, writeback=False, compressor='zstd', com
 
     """
 
-    return DbfilenameShelf(str(filename), flag, protocol, writeback, compress_level)
+    return Shelf(file_path, flag, serializer, protocol, compressor, compress_level)

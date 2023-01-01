@@ -1,5 +1,5 @@
 {% set name = "shelflet" %}
-{% set version = "0.1.2" %}
+{% set version = "0.1.3" %}
 # {% set sha256 = "ae2cc83fb5a75e8dc3e1b2c2137deea412c8a4c7c9acca52bf4ec59de52a80c9" %}
 
 # sha256 is the prefered checksum -- you can get it for a file with:
@@ -36,7 +36,6 @@ requirements:
     - setuptools
   run:
     - python {{ python }}
-    - zstandard
 
 test:
   imports:
@@ -47,7 +46,7 @@ about:
   home: https://github.com/mullenkamp/shelflet
   license: Apache License 2.0
   license_family: APACHE
-  summary: The Python shelve module except with compression to make smaller shelves!
-  description: The Python shelve module except with compression to make smaller shelves! Also adds in the gdbm library...because it is not packaged with anaconda...
+  summary: The Python shelve module except with optional serializers and compression to make smaller shelves!
+  description: The Python shelve module except with optional serializers and compression to make smaller shelves! Also adds in the gdbm library...because it is not packaged with anaconda...
   doc_url: https://github.com/mullenkamp/shelflet
   dev_url: ''
