@@ -58,7 +58,7 @@ entries in the cache, and empty the cache (d.sync() also synchronizes
 the persistent dictionary on disk, if feasible).
 """
 import pickle
-import dbm
+import _gdbm as dbm
 import pickle
 import json
 import pathlib
@@ -174,7 +174,7 @@ class Shelf(MutableMapping):
     See the module's __doc__ string for an overview of the interface.
     """
 
-    def __init__(self, file_path: str, flag: str = "r", serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
+    def __init__(self, file_path: str, flag: str = "r", sync: bool = False, lock: bool = True, serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
         """
 
         """
@@ -194,7 +194,11 @@ class Shelf(MutableMapping):
         else:
             raise ValueError("Invalid flag")
 
-        env = dbm.open(str(file_path), flag+'f')
+        if sync:
+            extra_flag = 's'
+        else:
+            extra_flag = 'f'
+        env = dbm.open(str(file_path), flag+extra_flag)
 
         self.env = env
         self._write = write
@@ -394,7 +398,7 @@ class Shelf(MutableMapping):
 
 
 def open(
-    file_path: str, flag: str = "r", serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
+    file_path: str, flag: str = "r", sync: bool = False, lock: bool = True, serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
     """
     Open a persistent dictionary for reading and writing. On creation of the file, the encodings (serializer and compressor) will be written to the file. Any reads and new writes do not need to be opened with the encoding parameters. Currently, ShockDB uses pickle to serialize the encodings to the file.
 
@@ -446,4 +450,4 @@ def open(
 
     """
 
-    return Shelf(file_path, flag, serializer, protocol, compressor, compress_level)
+    return Shelf(file_path, flag, sync, lock, serializer, protocol, compressor, compress_level)
