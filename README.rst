@@ -41,7 +41,7 @@ Write data
 
   import shelflet
 
-  with shelflet.open('test.shelf', 'n', serializer='pickle') as db:
+  with shelflet.open('test.shelf', 'n', serializer='pickle', key_serializer='str') as db:
     db['test_key'] = ['one', 2, 'three', 4]
 
 
