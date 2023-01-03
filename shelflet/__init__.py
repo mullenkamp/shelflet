@@ -1,1 +1,1 @@
-from shelflet.main import open
+from shelflet.main import open, Shelflet

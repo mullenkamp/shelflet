@@ -87,9 +87,9 @@ except:
     imports['lz4'] = False
 
 
-__all__ = ["Shelf", "open"]
+__all__ = ["Shelflet", "open"]
 
-hidden_keys = (b'00~._serializer', b'01~._compressor')
+hidden_keys = (b'00~._serializer', b'01~._compressor', b'02~._key_serializer')
 
 #######################################################
 ### Serializers and compressors
@@ -116,6 +116,13 @@ class Orjson:
         return orjson.dumps(obj, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_OMIT_MICROSECONDS | orjson.OPT_SERIALIZE_NUMPY)
     def loads(obj):
         return orjson.loads(obj)
+
+
+class Str:
+    def dumps(obj):
+        return obj.encode()
+    def loads(obj):
+        return obj.decode()
 
 
 # class Numpy:
@@ -167,14 +174,14 @@ class _ClosedDict(MutableMapping):
         return '<Closed Dictionary>'
 
 
-class Shelf(MutableMapping):
+class Shelflet(MutableMapping):
     """Base class for shelf implementations.
 
     This is initialized with a dictionary-like object.
     See the module's __doc__ string for an overview of the interface.
     """
 
-    def __init__(self, file_path: str, flag: str = "r", sync: bool = False, lock: bool = True, serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
+    def __init__(self, file_path: str, flag: str = "r", sync: bool = False, lock: bool = True, serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1, key_serializer = None):
         """
 
         """
@@ -194,11 +201,16 @@ class Shelf(MutableMapping):
         else:
             raise ValueError("Invalid flag")
 
+        extra_flags = ''
+
+        if not lock:
+            extra_flags += 'u'
         if sync:
-            extra_flag = 's'
+            extra_flags += 's'
         else:
-            extra_flag = 'f'
-        env = dbm.open(str(file_path), flag+extra_flag)
+            extra_flags += 'f'
+
+        env = dbm.open(str(file_path), flag+extra_flags)
 
         self.env = env
         self._write = write
@@ -207,8 +219,9 @@ class Shelf(MutableMapping):
         if fp_exists:
             self._serializer = pickle.loads(env[b'00~._serializer'])
             self._compressor = pickle.loads(env[b'01~._compressor'])
+            self._key_serializer = pickle.loads(env[b'02~._key_serializer'])
         else:
-            ## Serializer
+            ## Value Serializer
             if serializer is None:
                 self._serializer = None
             elif serializer == 'pickle':
@@ -224,6 +237,27 @@ class Shelf(MutableMapping):
                 class_methods = dir(serializer)
                 if ('dumps' in class_methods) and ('loads' in class_methods):
                     self._serializer = serializer
+                else:
+                    raise ValueError('If a class is passed for a serializer, then it must have dumps and loads methods.')
+            else:
+                raise ValueError('serializer must be one of pickle, json, str, orjson, or a serializer class with dumps and loads methods.')
+
+            ## Key Serializer
+            if key_serializer is None:
+                self._key_serializer = None
+            elif key_serializer == 'pickle':
+                self._key_serializer = Pickle(protocol)
+            elif key_serializer == 'json':
+                self._key_serializer = Json
+            elif key_serializer == 'orjson':
+                if imports['orjson']:
+                    self._key_serializer = Orjson
+                else:
+                    raise ValueError('orjson could not be imported.')
+            elif inspect.isclass(key_serializer):
+                class_methods = dir(key_serializer)
+                if ('dumps' in class_methods) and ('loads' in class_methods):
+                    self._key_serializer = key_serializer
                 else:
                     raise ValueError('If a class is passed for a serializer, then it must have dumps and loads methods.')
             else:
@@ -256,17 +290,26 @@ class Shelf(MutableMapping):
             ## Save encodings if new file
             env[b'00~._serializer'] = pickle.dumps(self._serializer, protocol)
             env[b'01~._compressor'] = pickle.dumps(self._compressor, protocol)
+            env[b'02~._key_serializer'] = pickle.dumps(self._key_serializer, protocol)
 
             if hasattr(env, 'sync'):
                 env.sync()
 
-    def _pre_key(self, key: str) -> bytes:
+    def _pre_key(self, key) -> bytes:
 
-        return key.encode()
+        ## Serialize to bytes
+        if self._key_serializer is not None:
+            key = self._key_serializer.dumps(key)
 
-    def _post_key(self, key: bytes) -> str:
+        return key
 
-        return key.decode()
+    def _post_key(self, key: bytes):
+
+        ## Serialize from bytes
+        if self._key_serializer is not None:
+            key = self._key_serializer.loads(key)
+
+        return key
 
     def _pre_value(self, value) -> bytes:
 
@@ -398,7 +441,7 @@ class Shelf(MutableMapping):
 
 
 def open(
-    file_path: str, flag: str = "r", sync: bool = False, lock: bool = True, serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1):
+    file_path: str, flag: str = "r", sync: bool = False, lock: bool = True, serializer = None, protocol: int = 5, compressor = None, compress_level: int = 1, key_serializer = None):
     """
     Open a persistent dictionary for reading and writing. On creation of the file, the encodings (serializer and compressor) will be written to the file. Any reads and new writes do not need to be opened with the encoding parameters. Currently, ShockDB uses pickle to serialize the encodings to the file.
 
@@ -450,4 +493,4 @@ def open(
 
     """
 
-    return Shelf(file_path, flag, sync, lock, serializer, protocol, compressor, compress_level)
+    return Shelflet(file_path, flag, sync, lock, serializer, protocol, compressor, compress_level, key_serializer)
