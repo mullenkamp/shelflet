@@ -224,6 +224,8 @@ class Shelflet(MutableMapping):
             ## Value Serializer
             if serializer is None:
                 self._serializer = None
+            elif serializer == 'str':
+                self._serializer = Str
             elif serializer == 'pickle':
                 self._serializer = Pickle(protocol)
             elif serializer == 'json':
@@ -245,6 +247,8 @@ class Shelflet(MutableMapping):
             ## Key Serializer
             if key_serializer is None:
                 self._key_serializer = None
+            elif key_serializer == 'str':
+                self._key_serializer = Str
             elif key_serializer == 'pickle':
                 self._key_serializer = Pickle(protocol)
             elif key_serializer == 'json':
